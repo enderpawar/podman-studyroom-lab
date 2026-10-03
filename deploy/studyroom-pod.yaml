@@ -1,0 +1,56 @@
+# scripts/podman-pod-up.sh 로 손으로 만든 Pod를 쿠버네티스 매니페스트로 옮긴 것.
+#   로컬 : podman kube play deploy/studyroom-pod.yaml  /  podman kube down deploy/studyroom-pod.yaml
+#   CI   : .github/workflows/ci.yml 의 podman 잡이 같은 파일을 그대로 띄운다
+#   서버 : deploy/quadlet/studyroom.kube 가 이 파일을 systemd 서비스로 올린다
+#
+# 학습용이라 계정·JWT 값을 env에 평문으로 넣었다(compose.yaml의 로컬/CI 전용 기본값과 동일).
+# 실제 배포라면 kind: Secret 으로 분리하고 secretKeyRef로 참조한다.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-data          # kube play에서는 같은 이름의 Podman named volume이 된다(있으면 재사용)
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: studyroom
+  labels:
+    app: studyroom
+spec:
+  # 쿠버네티스 Pod에는 depends_on이 없다. app이 mysql보다 먼저 떠서 Hikari fail-fast로
+  # 종료되면 이 정책에 따라 다시 뜨고, mysql이 준비된 뒤의 시도에서 기동에 성공한다.
+  # (initContainers는 mysql 컨테이너보다도 먼저 끝나야 해서 같은 Pod의 DB를 기다리는 데 쓸 수 없다.)
+  restartPolicy: Always
+  containers:
+    - name: mysql                         # 컨테이너 이름은 <Pod>-<컨테이너> → studyroom-mysql
+      image: docker.io/library/mysql:8
+      env:
+        - { name: MYSQL_ROOT_PASSWORD, value: studyroom_root }
+        - { name: MYSQL_DATABASE,      value: studyroom }
+        - { name: MYSQL_USER,          value: studyroom }
+        - { name: MYSQL_PASSWORD,      value: studyroom }
+      volumeMounts:
+        - name: mysql-data
+          mountPath: /var/lib/mysql
+      # 3306은 ports에 적지 않는다 — 같은 Pod의 app만 localhost:3306으로 붙으면 된다.
+    - name: app                           # → studyroom-app
+      image: localhost/study-room-api:dev # localhost/ 이름 + :dev 태그 → 로컬 이미지 저장소에서 찾는다
+      env:
+        # docker 프로필의 jdbc:mysql://mysql:3306 (compose 서비스 이름)을 덮어쓴다.
+        - name: SPRING_DATASOURCE_URL
+          value: jdbc:mysql://localhost:3306/studyroom?allowPublicKeyRetrieval=true&useSSL=false
+        - { name: MYSQL_USER,     value: studyroom }
+        - { name: MYSQL_PASSWORD, value: studyroom }
+        - { name: JWT_SECRET,     value: studyroom-docker-secret-key-must-be-at-least-32-bytes-long }
+      ports:
+        - containerPort: 8080
+          hostPort: 8080                  # kube play가 Infra 컨테이너에 8080을 publish한다
+  volumes:
+    - name: mysql-data
+      persistentVolumeClaim:
+        claimName: mysql-data

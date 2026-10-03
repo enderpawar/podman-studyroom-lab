@@ -5,8 +5,13 @@
 # 일치하지 않을 수 있어서, JDK 이미지 위에서 프로젝트 자체 gradlew(wrapper)를 그대로 쓴다 —
 # wrapper가 알아서 정확한 gradle 버전을 내려받아 빌드해준다.
 
+# Podman 실험 — FROM 이미지는 레지스트리까지 적은 정식 이름(fully qualified name)으로 쓴다.
+# "eclipse-temurin:17-jdk" 같은 short name은 Podman이 registries.conf의 short-name-mode·
+# unqualified-search-registries 설정으로 어디서 받을지 정하는데, TTY가 없는 CI에서는 고를 수 없어
+# 실패할 수 있다. docker.io/library/... 는 Docker에서도 같은 이미지를 가리키므로 손해가 없다.
+
 # ---- 1단계: 빌드 ----
-FROM eclipse-temurin:17-jdk AS build
+FROM docker.io/library/eclipse-temurin:17-jdk AS build
 WORKDIR /workspace
 COPY . .
 RUN chmod +x ./gradlew
@@ -14,9 +19,17 @@ RUN chmod +x ./gradlew
 RUN ./gradlew bootJar --no-daemon -x test
 
 # ---- 2단계: 실행 ----
-FROM eclipse-temurin:17-jre
+FROM docker.io/library/eclipse-temurin:17-jre
+# Podman 실험 — root가 아닌 실행 전용 사용자. 쿠버네티스 Pod Security Standard의 restricted 정책은
+# root 실행 컨테이너를 거부한다. 이름(spring)이 아니라 숫자 UID로 USER를 지정해야
+# runAsNonRoot 검사가 이미지 메타데이터만 보고 "root 아님"을 판정할 수 있다.
+# useradd --system 만 쓰면 그룹이 시스템 범위(999)에서 자동 배정돼 uid=1001, gid=999 가 된다
+# (Podman 5.8.8에서 podman exec ... id 로 확인). 그룹 번호도 1001로 고정해 --chown과 맞춘다.
+RUN groupadd --system --gid 1001 spring \
+ && useradd --system --uid 1001 --gid 1001 spring
 WORKDIR /app
-COPY --from=build /workspace/build/libs/*.jar app.jar
+COPY --from=build --chown=1001:1001 /workspace/build/libs/*.jar app.jar
+USER 1001:1001
 
 # Day29에서 만든 프로필 분리 — 컨테이너로 뜰 때는 항상 docker 프로필(application-docker.yml)을 쓴다.
 ENV SPRING_PROFILES_ACTIVE=docker

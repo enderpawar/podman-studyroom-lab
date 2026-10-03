@@ -48,6 +48,13 @@ dependencies {
 
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+	// Podman 실험 - H2 MySQL 모드가 놓치는 MySQL 문법 오류(Day32의 1064)를 로컬 테스트에서 잡는다.
+	// 버전은 Spring Boot BOM(io.spring.dependency-management)이 맞춘다.
+	// 컨테이너 엔진(Docker/Podman) 연결은 여기 적지 않고 DOCKER_HOST 등 환경변수로 준다.
+	testImplementation("org.springframework.boot:spring-boot-testcontainers")
+	testImplementation("org.testcontainers:junit-jupiter")
+	testImplementation("org.testcontainers:mysql")
 }
 
 tasks.withType<JavaCompile> { options.encoding = "UTF-8" }
