@@ -5,8 +5,13 @@
 # 일치하지 않을 수 있어서, JDK 이미지 위에서 프로젝트 자체 gradlew(wrapper)를 그대로 쓴다 —
 # wrapper가 알아서 정확한 gradle 버전을 내려받아 빌드해준다.
 
+# Podman 실험 — FROM 이미지는 레지스트리까지 적은 정식 이름(fully qualified name)으로 쓴다.
+# "eclipse-temurin:17-jdk" 같은 short name은 Podman이 registries.conf의 short-name-mode·
+# unqualified-search-registries 설정으로 어디서 받을지 정하는데, TTY가 없는 CI에서는 고를 수 없어
+# 실패할 수 있다. docker.io/library/... 는 Docker에서도 같은 이미지를 가리키므로 손해가 없다.
+
 # ---- 1단계: 빌드 ----
-FROM eclipse-temurin:17-jdk AS build
+FROM docker.io/library/eclipse-temurin:17-jdk AS build
 WORKDIR /workspace
 COPY . .
 RUN chmod +x ./gradlew
@@ -14,7 +19,7 @@ RUN chmod +x ./gradlew
 RUN ./gradlew bootJar --no-daemon -x test
 
 # ---- 2단계: 실행 ----
-FROM eclipse-temurin:17-jre
+FROM docker.io/library/eclipse-temurin:17-jre
 WORKDIR /app
 COPY --from=build /workspace/build/libs/*.jar app.jar
 
