@@ -6,8 +6,8 @@
 
 > **확인 범위**
 > Windows 11에 WSL2와 Podman 5.8.3을 설치하고 `podman machine`(rootless) 위에서 0~5단계와 8단계를 실제로 실행했다.
-> 6단계 Quadlet은 `quadlet -dryrun`까지만 했다. `~/.config`에 설치하고 `systemctl --user start`하는 것은 하지 않았다.
-> 7단계 CI 잡은 같은 명령을 로컬에서 실행해 확인했을 뿐, GitHub 러너에서는 돌리지 않았다.
+> 6단계 Quadlet은 machine VM 안의 `~/.config/containers/systemd/`에 설치해 start → status → /health → stop까지 확인했고, 끝난 뒤 유닛 파일을 지웠다.
+> 7단계 CI 잡의 GitHub 러너 결과는 3.7절에 적는다.
 > 출력은 실행 로그에서 그대로 발췌했다. 길어서 줄인 곳은 `...`로 표시했다.
 
 ## 1. 환경
@@ -51,7 +51,7 @@
 | 4. kube generate / play | `f807760` | **통과**: 기존 볼륨이면 재시작 0회, 새 볼륨이면 3회 재시작 후 healthy | 9초 / 20초 |
 | 5. non-root | `a42f157` → `4019dfc` | **통과(수정 1회)**: 처음에는 `gid=999`, 수정 후 `uid=1001(spring) gid=1001(spring)` | 빌드 91초, 기동 9초 |
 | 5-보충. compose 재확인 | — | **통과**: 최종 Dockerfile로 compose up, `/health` OK | 79초 |
-| 6. Quadlet | `7a0b33d`, `94a1c9a` | **dry-run 통과**, 설치·start는 **미검증**(`~/.config` 작성 전 확인 필요) | — |
+| 6. Quadlet | `7a0b33d`, `94a1c9a` | **통과**: dry-run → 설치 → start → `/health` OK(호스트·VM 모두) → stop | start 0.9초, health 확인까지 약 15초 |
 | 7. CI podman 잡 | `ef95acf` | **로컬에서 같은 명령 통과**, GitHub 러너는 **미검증** | — |
 | 8. Testcontainers | `f623e13` | **통과**: 설정 없이 Podman에 연결, `@ServiceConnection`이 H2를 덮어씀, Day32 1064 재현 | 전체 56초(MySQL 컨테이너 기동 15.7초) |
 
@@ -361,12 +361,70 @@ ExecStopPost=/usr/bin/podman kube down /tmp/quadlet-dry/studyroom-pod.yaml
 
 - rootless 유닛에 `podman-user-wait-network-online.service` 의존성이 자동으로 붙는다. 이전에 "미확인"으로 적었던 주석을 고쳤다(`94a1c9a`).
 - 상대 경로 `Yaml=studyroom-pod.yaml`은 유닛 파일 위치 기준의 절대 경로로 풀렸다.
-- `ExecStopPost`가 `kube down`이므로 4단계와 마찬가지로 stop해도 볼륨은 남을 것으로 예상된다(미검증).
-- **미검증:** `~/.config/containers/systemd/` 설치, `daemon-reload`, `start`, `status`, `/health`, `stop`.
+#### 실제 설치와 실행
+
+`podman machine cp`로 두 파일을 VM의 `/home/user/.config/containers/systemd/`에 복사했다. VM 사용자는 `user`이고 `Linger=yes`이다. `podman machine ssh`는 PowerShell에서 실행했다.
+
+```text
+$ systemctl --user daemon-reload && systemctl --user list-unit-files studyroom.service
+UNIT FILE         STATE     PRESET
+studyroom.service generated -
+
+$ time systemctl --user start studyroom
+real	0m0.928s
+
+$ systemctl --user status studyroom
+● studyroom.service - Study room API (MySQL + Spring Boot pod)
+     Loaded: loaded (/home/user/.config/containers/systemd/studyroom.kube; generated)
+    Drop-In: /usr/lib/systemd/user/service.d
+             └─10-timeout-abort.conf
+     Active: active (running) since Sat 2026-10-03 22:46:45 KST; 12ms ago
+   Main PID: 16239 (conmon)
+     Memory: 26.8M (peak: 46.9M)
+     CGroup: /user.slice/user-1000.slice/user@1000.service/app.slice/studyroom.service
+             ├─16239 /usr/bin/conmon ... -n a9776745c720-service ...
+             ├─16338 rootlessport
+             ├─16345 rootlessport-child
+             ├─16354 /usr/bin/conmon ... -n df3e5d522361-infra ...
+             ├─16359 /usr/bin/conmon ... -n studyroom-mysql ...
+             └─16372 /usr/bin/conmon ... -n studyroom-app ...
+```
+
+15초 뒤 확인한 결과:
+
+```text
+--- host(Windows PowerShell Invoke-WebRequest):
+OK
+--- inside VM:
+OK (vm try 1)
+a9776745c720-service | Up 25 seconds |
+df3e5d522361-infra | Up 25 seconds | studyroom
+studyroom-mysql | Up 25 seconds | studyroom
+studyroom-app | Up 24 seconds | studyroom
+restarts=0
+```
+
+- `systemctl start`는 0.9초 만에 끝난다. `Type=notify`이므로 이 시점은 컨테이너가 시작된 시점이고 Spring 기동 완료 시점이 아니다. 그래서 `/health`는 따로 확인해야 한다.
+- `--service-container=true` 때문에 Pod 밖에 `<id>-service` 컨테이너가 하나 더 생긴다. systemd가 감시하는 Main PID는 이 컨테이너의 conmon이다.
+- systemd가 VM 안에서 직접 띄운 Pod인데도 8080이 Windows 호스트까지 전달됐다.
+- 볼륨 `mysql-data`를 재사용해서 app 재시작은 0회였다.
+
+```text
+$ systemctl --user stop studyroom      → stop-exit=0
+$ systemctl --user is-active studyroom → inactive
+$ podman ps -a | wc -l                  → 0
+$ podman volume ls                      → mysql-data   (ExecStopPost=kube down이라 볼륨은 남음)
+```
+
+**정리:** linger가 켜져 있어서 유닛을 그대로 두면 podman machine을 켤 때마다 Pod가 자동으로 떠서 8080을 차지한다. 그래서 확인이 끝난 뒤 두 파일을 지우고 `daemon-reload`를 했다(`0 unit files listed`).
 
 ### 3.7 7단계 — CI podman 잡
 
-이 저장소에는 원격이 없고 `act`도 없어서 GitHub 러너에서는 돌리지 않았다. 잡의 명령(`podman build` → `podman kube play deploy/studyroom-pod.yaml` → `/health` 재시도 → `podman kube down`)은 4·5단계에서 로컬 5.8.8로 같은 순서로 실행해 통과했다. 러너의 Podman 버전과 그 위에서의 결과는 **미검증**이다.
+잡의 명령(`podman build` → `podman kube play deploy/studyroom-pod.yaml` → `/health` 재시도 → `podman kube down`)은 4·5단계에서 로컬 5.8.8로 같은 순서로 실행해 통과했다.
+
+이 저장소는 기본 브랜치가 `main`이라 트리거에 `main`과 `workflow_dispatch`를 추가했다. 기존 `master`는 그대로 두었다.
+
+GitHub 러너 결과: (push 후 기록)
 
 ### 3.8 8단계 — Testcontainers
 
@@ -462,6 +520,8 @@ Caused by: java.sql.SQLSyntaxErrorException: You have an error in your SQL synta
 | 4장 5) kube down | 정리한다 | 볼륨은 남는다(`Volumes removed:` 비어 있음) | "데이터까지 지우려면 `podman volume rm`" 추가 |
 | 4장 5) non-root Dockerfile | `useradd --system --uid 1001 spring`, `USER 1001` | `uid=1001 gid=999` | `groupadd --gid 1001` + `useradd --gid 1001`, `USER 1001:1001` |
 | 4장 6) Quadlet | `After=network-online.target`만 | Quadlet이 `podman-user-wait-network-online.service` 의존성을 자동으로 붙임(dry-run 확인) | 한 줄 보충, dry-run 명령 소개 |
+| 4장 6) Quadlet 실행 | start → status | `start`는 0.9초 만에 끝나지만 Spring 기동은 그 뒤에 진행됨. `<id>-service` 컨테이너가 추가로 생김. stop해도 볼륨은 남음 | "start가 끝났다고 앱이 준비된 것은 아니다"와 service 컨테이너 설명 추가 |
+| 4장 6) linger | `loginctl enable-linger` 권장 | podman machine은 이미 `Linger=yes`. 유닛을 남겨 두면 machine을 켤 때마다 자동으로 떠서 8080을 차지함 | 실습이 끝나면 유닛 파일을 지운다는 정리 단계 추가 |
 | 4장 8) 테스트 코드 | `new MySQLContainer<>("docker.io/library/mysql:8")` | 생성자에서 `IllegalStateException` | `asCompatibleSubstituteFor("mysql")` |
 | 4장 8) 소켓 설정 | Linux·macOS만 있음, "rootless에서는 Ryuk가 동작하지 않는다" | Windows podman machine(rootless)에서는 설정 없이 연결됐고 Ryuk도 동작함 | Windows 절 추가, Ryuk 문장을 "Linux rootless 소켓 환경에서"로 범위 한정(Linux는 미검증) |
 | 4장 8) `@ServiceConnection` | H2 환경변수보다 우선한다 | 확인됨(`dataSourceIsMySqlNotH2` 통과) | 검증 방법(DB 제품명 단언)을 같이 소개 |
@@ -470,10 +530,8 @@ Caused by: java.sql.SQLSyntaxErrorException: You have an error in your SQL synta
 
 ## 7. 남은 기술부채
 
-1. Quadlet을 실제로 설치·실행: `~/.config/containers/systemd/`에 쓰기 전에 확인을 받아야 함
-2. CI podman 잡을 GitHub 러너에서 실행해 러너의 Podman 버전과 short name 동작 확인(원격 저장소와 push가 필요해 확인을 받아야 함)
-3. Linux rootless 소켓 환경의 Testcontainers 설정(`podman.socket`, Ryuk) 확인
-4. `.gitattributes`와 gid 수정을 원본 저장소에도 반영할지 결정
-5. kube YAML의 평문 비밀값을 `kind: Secret`으로 분리
-6. 이 저장소를 GitHub에 올린다면 `ci.yml` 트리거 브랜치(`master` → `main`) 조정
-7. machine 메모리 2GiB에서 MySQL과 앱을 동시에 띄우는 데는 문제가 없었지만, 메모리 사용량은 측정하지 않았음
+1. Linux rootless 소켓 환경의 Testcontainers 설정(`podman.socket`, Ryuk) 확인
+2. `.gitattributes`와 gid 수정을 원본 저장소에도 반영할지 결정
+3. kube YAML의 평문 비밀값을 `kind: Secret`으로 분리
+4. Quadlet을 실제 리눅스 서버(VM 한 대)에 올려 재부팅 후 자동 시작까지 확인
+5. machine 메모리 2GiB에서 MySQL과 앱을 동시에 띄우는 데는 문제가 없었지만, 메모리 사용량은 측정하지 않았음

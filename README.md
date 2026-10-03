@@ -1,168 +1,201 @@
-# podman-studyroom-lab
+# Podman으로 옮겨 본 스터디룸 예약 API
 
-스터디룸 예약 API(Spring Boot 3.5.3, Java 17, MySQL 8, Flyway, JWT)를 **Docker 대신 Podman으로** 띄우기 위한 실험 저장소다.
-원본 학습 저장소(`enderpawar/Developer-Roadmap_Spring_Study` @ `15e0703`)에서 예제 코드만 복사해 왔고, 학습 기록 문서는 가져오지 않았다.
+[![CI](https://github.com/enderpawar/podman-studyroom-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/enderpawar/podman-studyroom-lab/actions/workflows/ci.yml)
 
-> **현재 상태: Windows 11 + Podman 5.8(rootless podman machine)에서 실행해 검증했다.**
-> 이미지 빌드, podman compose, Pod 스크립트, kube play, non-root, Testcontainers(Day32 1064 재현 포함)는 통과했다.
-> Quadlet은 dry-run까지만, CI podman 잡은 GitHub 러너에서는 돌리지 않았다.
-> 명령별 실제 출력과 블로그 초안과 다른 점은 [docs/verification.md](docs/verification.md)에 있다.
+5주 동안 만든 스터디룸 예약 API(Spring Boot 3.5.3 · Java 17 · MySQL 8 · Flyway · JWT)를 **Docker 대신 Podman으로** 실행해 본 실험 저장소다.
+처음에는 블로그 글에 "이렇게 하면 된다"는 설계안만 써 두었다. 그 설계안을 실제로 하나씩 실행해 보고, 어디가 맞고 어디가 틀렸는지 오류 원문과 측정값으로 남겼다.
 
-## 1. 저장소 구조
+- 원본 코드: [enderpawar/Developer-Roadmap_Spring_Study](https://github.com/enderpawar/Developer-Roadmap_Spring_Study) @ `15e0703` (Week E 완료 시점)
+- 검증 환경: Windows 11 · WSL 2.7.13 · Podman 5.8.3(클라이언트) / 5.8.8(machine, rootless) · Temurin 17
+- 전체 기록: [docs/verification.md](docs/verification.md) — 명령별 실제 출력, 블로그 초안과 다른 점 22건
 
-```text
-app/                          원본 예제 코드(Spring Boot)
-  Dockerfile                  ← FROM 정식 이름, non-root(USER 1001)
-  build.gradle.kts            ← Testcontainers 의존성 추가
-  src/test/.../FlywayMySqlIntegrationTest.java   ← 신규
-compose.yaml                  원본 그대로(podman compose로 실행)
-scripts/podman-pod-up.sh      Pod 수동 구성(pod create → mysql → healthy 대기 → app)
-scripts/podman-pod-down.sh    Pod 정리(--volumes 로 DB 볼륨까지)
-deploy/studyroom-pod.yaml     쿠버네티스 매니페스트(PVC + Pod) — kube play / CI / Quadlet 공통
-deploy/quadlet/studyroom.kube systemd 사용자 서비스용 Quadlet 유닛
-.github/workflows/ci.yml      기존 test·docker 잡 + podman 잡 추가
-.gitattributes                gradlew·*.sh를 LF로 고정(Windows 체크아웃 대비)
-docs/verification.md          검증 기록·블로그 초안과의 차이·남은 과제
-```
+## 1. 결과 한눈에 보기
 
-## 2. 커밋 순서대로 읽는 법
-
-`main`은 원본을 가져온 상태이고, `feat/podman`에 단계별로 한 커밋씩 쌓았다. 커밋 하나가 학습 단위 하나다.
-
-```bash
-git log --oneline main..feat/podman      # 단계 목록
-git show e2af262                         # 한 단계씩 diff 읽기
-git diff main feat/podman --stat         # Podman 전환으로 바뀐 파일 전체
-```
-
-| 순서 | 커밋 | 내용 | 볼 개념 |
+| 단계 | 한 일 | 결과 | 측정값 |
 |---|---|---|---|
-| 1 | `build: qualify Dockerfile base images` | `FROM docker.io/library/...` | short name 해석과 `registries.conf` |
-| 2 | `feat: add scripts to run app and mysql in a single podman pod` | Pod 수동 구성 | Infra 컨테이너, 네트워크 네임스페이스 공유 → `localhost:3306` |
-| 3 | `feat: add kubernetes pod manifest` | PVC + Pod YAML | `depends_on`이 없는 쿠버네티스에서 `restartPolicy`에 기대는 기동 순서 |
-| 4 | `build: run the app image as non-root uid 1001` | `USER 1001` | rootless(호스트 쪽)와 컨테이너 안 non-root(이미지 쪽)의 구분 |
-| 5 | `feat: add quadlet unit` | `.kube` 유닛 | systemd generator, linger |
-| 6 | `ci: add podman job` | kube play로 CI 검증 | 로컬과 CI가 같은 YAML 하나를 기준으로 삼는 구조 |
-| 7 | `test: add Testcontainers MySQL test` | 실제 MySQL로 Flyway 검증 | `@ServiceConnection`, H2 호환 모드의 한계(Day32) |
-| 8 | `fix: pin the runtime user's group to gid 1001` | 실행해 보고 고친 것 | `useradd --system`이 그룹을 999로 배정한 실제 사례 |
-| 9 | `docs: record quadlet dry-run result` | dry-run 결과 반영 | Quadlet이 자동으로 붙이는 network-online 의존성 |
+| 1 | Dockerfile `FROM`을 정식 이름으로 바꾸고 `podman build` | ✅ | 빌드 64초, 이미지 380 MB |
+| 2 | 기존 `compose.yaml`을 `podman compose`로 실행 | ✅ | mysql이 healthy가 된 뒤 app 시작(mysql 시작 18초 뒤), 재시작 0회 |
+| 3 | Pod 하나에 mysql + app (`scripts/podman-pod-up.sh`) | ✅ | 29초, 호스트 3306 닫힘 · 8080만 열림 |
+| 4 | 쿠버네티스 YAML로 `podman kube play` | ✅ | 새 볼륨: app 재시작 3회 후 20초 / 기존 볼륨: 9초 |
+| 5 | non-root 이미지(`USER 1001:1001`) | ✅ 수정 1회 | `uid=1001(spring) gid=1001(spring)` |
+| 6 | Quadlet으로 systemd 사용자 서비스화 | ✅ | `start` 0.9초, `/health` OK, stop 후 정리 |
+| 7 | GitHub Actions `podman` 잡 | 아래 배지 / [3.7절](docs/verification.md#37-7단계--ci-podman-잡) | |
+| 8 | Testcontainers로 실제 MySQL에서 Flyway 검증 | ✅ | 73개 테스트 통과, Day32 `1064` 오류 로컬 재현 |
 
-## 3. 핵심 차이 한 장 요약
+## 2. 구조: Compose에서 Pod로
 
-```text
-Compose  : [mysql 컨테이너] ←─ mysql:3306 (서비스 이름 DNS) ─── [app 컨테이너]
-           호스트에 3306, 8080 둘 다 publish
-
-Pod      : ┌──────────── Pod studyroom (Infra 컨테이너가 네트워크 네임스페이스 소유) ────────────┐
-           │ [studyroom-mysql] ←── localhost:3306 ─── [studyroom-app]                             │
-           └──────────────────────────────────── 8080만 호스트로 publish ─────────────────────────┘
-           app의 DB 주소는 SPRING_DATASOURCE_URL 환경변수로 덮어씀(환경변수 > application-docker.yml)
+```mermaid
+flowchart LR
+    subgraph Compose["Compose (기존)"]
+        A1[app 컨테이너] -- "mysql:3306<br/>(서비스 이름 DNS)" --> M1[mysql 컨테이너]
+    end
+    subgraph Pod["Podman Pod studyroom (이번 실험)"]
+        I[infra 컨테이너<br/>네트워크 네임스페이스 소유<br/>8080 publish]
+        A2[studyroom-app] -- "localhost:3306" --> M2[studyroom-mysql]
+        A2 -.공유.- I
+        M2 -.공유.- I
+    end
+    H((호스트)) -- ":8080, :3306" --> Compose
+    H -- ":8080만" --> I
 ```
 
-## 4. 실행 순서 (Podman 설치 후)
+- 같은 Pod 안의 컨테이너는 네트워크 네임스페이스를 공유하므로 DB 주소가 `mysql:3306`에서 `localhost:3306`으로 바뀐다.
+- `application-docker.yml`을 복사하지 않고 환경변수 `SPRING_DATASOURCE_URL` 하나로 덮어썼다. OS 환경변수가 프로필 yml보다 우선한다.
+- 같은 `deploy/studyroom-pod.yaml` 하나를 로컬(`kube play`), CI(`podman` 잡), 서버(Quadlet)가 함께 쓴다.
 
-### 4.1 설치 — Windows
+## 3. 실행하면서 부딪힌 문제
 
-이 PC에서 실제로 성공한 순서다.
+설계안을 실제로 돌려 보니 글로만 썼을 때는 보이지 않던 문제가 나왔다. 전부 실제 출력이다.
+
+### 3.1 Windows에서 클론하면 이미지 빌드 실패
+
+```text
+[1/2] STEP 5/5: RUN ./gradlew bootJar --no-daemon -x test
+/bin/sh: 1: ./gradlew: not found
+Error: building at STEP "RUN ./gradlew bootJar --no-daemon -x test": while running runtime: exit status 127
+```
+
+- **원인:** `core.autocrlf=true`인 Windows에서 클론하면 `gradlew`가 CRLF가 된다. shebang이 `#!/bin/sh\r`가 되어 리눅스 빌드 컨테이너가 인터프리터를 찾지 못한다. 파일은 분명히 있는데 메시지는 `not found`다. CI(ubuntu)는 LF로 체크아웃되므로 이 문제가 드러나지 않았다.
+- **해결:** `.gitattributes`에 `gradlew text eol=lf` 추가 (`a8c7854`)
+
+### 3.2 Testcontainers 이미지 이름 오류
+
+```text
+java.lang.IllegalStateException: Failed to verify that image 'docker.io/library/mysql:8' is a compatible substitute for 'mysql'.
+```
+
+- **원인:** `MySQLContainer`는 생성자에서 이미지 이름을 기본값 `mysql`과 비교한다. 정식 이름 `docker.io/library/mysql`을 같은 이미지로 보지 않는다(1.21.2). Docker가 없어도 생성자에서 바로 실패한다.
+- **해결:** `DockerImageName.parse("docker.io/library/mysql:8").asCompatibleSubstituteFor("mysql")` (`f623e13`)
+
+### 3.3 non-root인데 그룹이 999
+
+```text
+uid=1001(spring) gid=999(spring) groups=999(spring)
+-rw-r--r-- 1 1001 1001 63301136 Oct  3 13:12 app.jar
+```
+
+- **원인:** `useradd --system`이 그룹 번호를 시스템 범위에서 자동으로 배정했다. jar는 `--chown=1001:1001`이라 이름 없는 그룹 1001 소유가 됐다.
+- **해결:** `groupadd --gid 1001` + `useradd --gid 1001`, `USER 1001:1001` (`4019dfc`) → `uid=1001(spring) gid=1001(spring)`
+
+### 3.4 쿠버네티스 YAML에는 depends_on이 없다
+
+새 볼륨으로 `kube play`를 하면 app이 mysql 초기화보다 먼저 뜬다.
+
+```text
+Caused by: org.flywaydb.core.internal.exception.FlywaySqlException: Unable to obtain connection from database: Communications link failure
+```
+
+- **설계:** `restartPolicy: Always`에 기대서 다시 뜨게 했다. `initContainers`는 같은 Pod의 mysql보다도 먼저 끝나야 하므로 DB를 기다리는 데 쓸 수 없다.
+- **측정:** 기동 시도 4번(실패 3번, 성공 1번), `RestartCount=3`, 20초 만에 `/health` OK. 설계대로 동작했다.
+
+### 3.5 Windows 도구 환경
+
+| 증상 | 원인 | 대응 |
+|---|---|---|
+| `looking up compose provider failed` / `exec: "docker-compose": executable file not found` | Podman for Windows에는 compose provider가 들어 있지 않다 | docker-compose를 따로 받아 PATH에 둠 |
+| `ls: cannot access 'C:/Program Files/Git/app'` | Git Bash가 `/app` 인자를 Windows 경로로 바꿈 | `export MSYS_NO_PATHCONV=1` |
+| 저장소에 `NUL` 파일이 생김 | Git Bash에서 `podman machine ssh`를 실행하면 SSH가 known_hosts를 `NUL` 파일로 씀 | `podman machine ssh`는 PowerShell에서 실행 |
+| `0x80073d28 : ... administrator privileges are required` | `winget install Microsoft.WSL`은 관리자 권한이 필요 | 관리자 권한으로 다시 실행 |
+
+## 4. 실행으로 확인한 것
+
+| 질문 | 확인 방법 | 결과 |
+|---|---|---|
+| `@ServiceConnection`이 Gradle이 강제한 H2 URL을 이기는가 | `DatabaseProductName == "MySQL"` 단언 | 이긴다 |
+| H2가 놓친 Day32 오류를 로컬에서 잡을 수 있는가 | 임시 `V999__tmp.sql`에 `--공백없는주석` | H2 71개 통과, MySQL 테스트만 `Error Code : 1064` |
+| Windows podman machine에서 Testcontainers 설정이 필요한가 | 환경변수 없이 실행 | 필요 없음. `npipe:////./pipe/docker_engine` 자동 사용, Ryuk 정상 |
+| `kube down`이 데이터를 지우는가 | `podman volume ls` | 지우지 않는다 |
+| infra 컨테이너 이름은 `<pod>-infra`인가 | `podman ps -a --pod` | 아니다. `<Pod ID 12자리>-infra` |
+| Quadlet이 rootless 네트워크 대기를 처리하는가 | `quadlet -dryrun -user` | `podman-user-wait-network-online.service`를 자동으로 붙인다 |
+| `systemctl start`가 끝나면 앱도 준비된 것인가 | start 시간과 `/health` 비교 | 아니다. start는 0.9초, 앱 준비는 그 뒤 |
+
+## 5. 커밋으로 따라가는 과정
+
+커밋 하나가 단계 하나다. `git log --oneline` 순서대로 `git show <커밋>`으로 읽으면 된다.
+
+| 커밋 | 내용 |
+|---|---|
+| `a8c7854` | 원본 예제 코드 가져오기, `.gitattributes` |
+| `e2af262` | `FROM docker.io/library/...` 정규화 |
+| `865d14d` | Pod 수동 구성 스크립트 |
+| `f807760` | 쿠버네티스 Pod 매니페스트 |
+| `a42f157` | non-root 실행 |
+| `7a0b33d` | Quadlet 유닛 |
+| `ef95acf` | CI `podman` 잡 |
+| `f623e13` | Testcontainers MySQL 테스트 |
+| `dbd2a85` | 실행 전 기록(Podman 설치 전, 미검증 상태) |
+| `4019dfc` | **실행해 보고 고친 것**: gid 1001 고정 |
+| `94a1c9a` | Quadlet dry-run 결과 반영 |
+| `5a6b556` 이후 | 실제 실행 결과로 기록 갱신 |
+
+`dbd2a85`(실행 전)와 `5a6b556`(실행 후)의 `docs/verification.md`를 비교하면, 추측으로 쓴 내용이 실측으로 어떻게 바뀌었는지 볼 수 있다.
+
+## 6. 저장소 구조
+
+```text
+app/                          Spring Boot 앱 (Dockerfile, build.gradle.kts, 테스트)
+compose.yaml                  원본 그대로 — podman compose로 실행
+scripts/podman-pod-up.sh      Pod 수동 구성 (Git Bash)
+scripts/podman-pod-down.sh    Pod 정리 (--volumes 로 DB 볼륨까지)
+deploy/studyroom-pod.yaml     PVC + Pod 매니페스트 — kube play · CI · Quadlet 공통
+deploy/quadlet/studyroom.kube systemd 사용자 서비스 유닛
+.github/workflows/ci.yml      test → docker · podman 잡
+docs/verification.md          검증 기록 전체
+```
+
+## 7. 직접 실행하기
+
+### 설치 (Windows)
 
 ```powershell
-# WSL이 없으면 wsl --install --no-distribution 은 안내 문구만 출력한다 → winget으로 설치(관리자 권한 필요)
-winget install -e --id Microsoft.WSL   # 관리자 PowerShell에서
+winget install -e --id Microsoft.WSL     # 관리자 PowerShell
 winget install -e --id RedHat.Podman
-# 새 터미널을 열어 PATH 반영
 podman machine init
-podman machine start                   # "API forwarding listening on: npipe:////./pipe/docker_engine"
-podman version
-podman info --format '{{.Host.Security.Rootless}}'   # true
+podman machine start
 ```
 
-`podman compose`를 쓰려면 provider(docker-compose 또는 podman-compose)를 따로 설치해야 한다. Podman for Windows 설치본에는 들어 있지 않다.
+`podman compose`를 쓰려면 docker-compose 또는 podman-compose를 따로 설치해야 한다. `scripts/*.sh`는 Git Bash에서 실행한다.
 
-셸 스크립트(`scripts/*.sh`)는 **Git Bash**에서 실행한다. Git Bash에서 주의할 점은 세 가지다.
-
-- GNU `timeout`이 Windows `timeout.exe`보다 먼저 잡힌다(`which -a timeout`으로 확인함).
-- `/app` 같은 경로 인자가 `C:/Program Files/Git/app`으로 바뀐다. `podman exec`로 컨테이너 안 경로를 다룰 때는 `export MSYS_NO_PATHCONV=1`을 먼저 실행한다.
-- `podman machine ssh`를 Git Bash에서 실행하면 현재 폴더에 `NUL` 파일이 생긴다. 이 명령은 PowerShell에서 실행한다.
-
-### 4.2 단계별 명령
+### 단계별 명령
 
 ```bash
-# 1) 이미지 빌드
-time podman build -t localhost/study-room-api:dev ./app
-podman images localhost/study-room-api
-
-# 2) 기존 compose.yaml 그대로
-podman compose up -d          # 첫 줄에 어떤 provider(docker-compose / podman-compose)를 부르는지 출력된다
-curl -f http://localhost:8080/health
-podman compose logs | grep -E "mysql.*healthy|Started StudyRoomApiApplication"   # 기동 순서 확인
+podman build -t localhost/study-room-api:dev ./app          # 1
+podman compose up -d && curl -f localhost:8080/health       # 2
 podman compose down -v
-
-# 3) Pod 수동 구성
-./scripts/podman-pod-up.sh
-podman ps -a --pod            # 3개: <Pod ID 12자리>-infra, studyroom-mysql, studyroom-app
-curl -f http://localhost:8080/health
-# 호스트 3306이 닫혀 있는지(PowerShell): Test-NetConnection localhost -Port 3306
-
-# 4) kube generate 비교 → kube play
-podman kube generate studyroom -f /tmp/generated.yaml   # deploy/ 파일을 덮어쓰지 말고 따로 뽑아 비교
+./scripts/podman-pod-up.sh                                   # 3
+podman kube generate studyroom -f generated.yaml             # 4 — 생성본은 따로 뽑아 비교
 ./scripts/podman-pod-down.sh
 podman kube play deploy/studyroom-pod.yaml
-podman ps -a --pod            # 이름이 studyroom-mysql / studyroom-app 인지
-podman logs studyroom-app | grep -cE "Communications link failure|Connection refused"   # mysql보다 먼저 떠서 실패한 횟수
-podman inspect studyroom-app --format '{{.RestartCount}}'
-curl -f http://localhost:8080/health
-podman exec studyroom-app id  # 5) non-root 확인: uid=1001
-podman kube down deploy/studyroom-pod.yaml   # 볼륨 mysql-data는 남는다
-podman volume rm mysql-data                  # 새 볼륨으로 다시 play하면 app이 mysql보다 먼저 떠서 재시작되는 모습을 볼 수 있다
+curl -f localhost:8080/health
+MSYS_NO_PATHCONV=1 podman exec studyroom-app id              # 5
+podman kube down deploy/studyroom-pod.yaml                   # 볼륨은 남는다
 ```
 
-### 4.3 Quadlet (리눅스 서버에서)
+### Quadlet (podman machine 안 또는 리눅스 서버)
 
 ```bash
-mkdir -p ~/.config/containers/systemd
 cp deploy/quadlet/studyroom.kube deploy/studyroom-pod.yaml ~/.config/containers/systemd/
-/usr/libexec/podman/quadlet -dryrun -user      # 생성될 studyroom.service 미리보기
-systemctl --user daemon-reload
-systemctl --user start studyroom
-systemctl --user status studyroom
-curl -f http://localhost:8080/health
+/usr/libexec/podman/quadlet -dryrun -user
+systemctl --user daemon-reload && systemctl --user start studyroom
+curl -f localhost:8080/health
 systemctl --user stop studyroom
+# 실습이 끝나면 유닛 파일을 지운다. linger가 켜져 있으면 machine을 켤 때마다 자동으로 뜬다.
 ```
 
-Windows의 `podman machine` 안에서는 systemd 사용자 세션이 `running`이었고, `/tmp`에 복사한 파일로 dry-run이 성공했다. 실제 설치와 start는 아직 하지 않았다.
-
-```powershell
-podman machine ssh "mkdir -p /tmp/quadlet-dry"
-podman machine cp deploy/quadlet/studyroom.kube podman-machine-default:/tmp/quadlet-dry/studyroom.kube
-podman machine cp deploy/studyroom-pod.yaml podman-machine-default:/tmp/quadlet-dry/studyroom-pod.yaml
-podman machine ssh "QUADLET_UNIT_DIRS=/tmp/quadlet-dry /usr/libexec/podman/quadlet -dryrun -user"
-```
-
-## 5. Testcontainers ↔ Podman
+### 테스트
 
 ```bash
-# 컨테이너 엔진이 없으면 테스트 2개가 skip되고 기존 71개는 그대로 통과한다(확인함).
-./gradlew test
-# Testcontainers 테스트만
-./gradlew test --tests '*FlywayMySqlIntegrationTest'
+cd app
+./gradlew test                                        # Podman 없으면 2개 skip, 71개 통과
+./gradlew test --tests '*FlywayMySqlIntegrationTest'  # MySQL 통합 테스트만
 ```
 
-**Windows + podman machine(rootless): 설정이 필요 없었다.** machine이 `npipe:////./pipe/docker_engine`에 Docker 호환 API를 열어 두기 때문에 `DOCKER_HOST`를 주지 않아도 연결됐다. Ryuk(0.12.0)도 정상으로 떠서 테스트 후 컨테이너가 남지 않았다.
+## 8. 회고
 
-다른 OS에서는 연결 설정을 빌드 파일이 아니라 환경변수로 준다. 아래는 Testcontainers 공식 문서와 블로그 초안의 설정이며, **이 저장소에서는 실행하지 않았다.**
+<!-- [직접 작성] 이 실험에서 새로 이해한 것, 예상과 달랐던 것, 다음에 해 볼 것을 직접 적는다. -->
 
-```bash
-# Linux (rootless)
-systemctl --user enable --now podman.socket
-export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock
-export TESTCONTAINERS_RYUK_DISABLED=true
+`[직접 작성]`
 
-# macOS (podman machine)
-export DOCKER_HOST=unix://$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}')
-export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
-```
+## 9. 작업 방식
 
-확인된 결과는 두 가지다.
-
-1. `dataSourceIsMySqlNotH2` 통과: Test 태스크가 강제한 H2 `SPRING_DATASOURCE_URL`을 `@ServiceConnection`이 덮어썼다.
-2. Day32 재현: `app/src/main/resources/db/migration/V999__tmp.sql`에 `--공백없는주석` 한 줄과 `select 1;`을 넣었다. 이 테스트만 `Error Code : 1064`로 실패했고 H2 기존 테스트 71개는 통과했다. 직접 해 볼 때도 **확인 후 파일은 반드시 지운다.**
+코드 작성과 실행 검증은 Claude Code와 함께 진행했고, 각 커밋에 `Co-Authored-By`로 남겼다.

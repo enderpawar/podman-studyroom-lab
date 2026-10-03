@@ -1,11 +1,13 @@
 name: CI
 
 # app/ 하나만 빌드·테스트한다. (Study_plan.md 5.5)
+# Podman 실험 저장소는 기본 브랜치가 main이라 main을 추가했다. 수동 실행용 workflow_dispatch도 추가.
 on:
   push:
-    branches: [master]
+    branches: [master, main]
   pull_request:
-    branches: [master]
+    branches: [master, main]
+  workflow_dispatch:
 
 jobs:
   # Day32 — 잡 이름이 build였지만 실제로는 테스트만 돌린다. docker 잡이 needs: test로 이 잡을
