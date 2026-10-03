@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: study-room-api
+  # Day29 — 프로필 분리. 여기(공통 파일)에는 환경(local/test/prod)과 무관하게 항상 같은 값만 둔다.
+  # datasource·jwt.secret처럼 환경마다 달라지는 값은 application-{profile}.yml로 옮겼다.
+  # 기본값은 local — bootRun처럼 아무 프로필도 지정하지 않고 실행하면 로컬 개발용 설정을 쓴다.
+  # (테스트는 build.gradle.kts의 Test 태스크가 SPRING_PROFILES_ACTIVE=test를 환경변수로 강제하므로
+  #  이 기본값보다 우선한다 — OS 환경변수가 application.yml의 spring.profiles.active보다 우선순위가 높다.)
+  profiles:
+    active: local
+  jpa:
+    hibernate:
+      ddl-auto: validate # Hibernate는 스키마를 건드리지 않는다. 주인은 Flyway.
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+  h2:
+    console:
+      enabled: true
+
+  flyway:
+    enabled: true
+
+# Day29 — logback 로그 패턴에 %X{requestId}를 넣어서, RequestIdFilter가 MDC에 넣어둔 요청별 ID가
+# 이 요청을 처리하는 동안 찍히는 모든 로그 줄에 자동으로 붙게 한다.
+logging:
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level [%X{requestId}] %logger{36} - %msg%n"
+
+# Week D D2 - JWT 만료 시간은 환경 공통(1시간). secret은 환경마다 달라서 profile 파일로 옮겼다.
+jwt:
+  expiration: 3600000 # 1시간(ms)

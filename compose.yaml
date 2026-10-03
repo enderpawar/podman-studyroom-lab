@@ -1,0 +1,45 @@
+# Day31 — app(스프링부트) + mysql:8. 로컬에는 Docker가 설치돼 있지 않아 실행 검증은
+# 하지 못했다(day31.md에 그대로 남김) — 실제 실행 검증은 Day32의 GitHub Actions "docker" 잡이 한다.
+services:
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-studyroom_root}
+      MYSQL_DATABASE: studyroom
+      MYSQL_USER: ${MYSQL_USER:-studyroom}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-studyroom}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # app이 healthcheck 없이 곧바로 mysql에 붙으면, 컨테이너는 떴지만 mysqld는 아직 초기화 중인
+      # 상태(포트는 열렸는데 인증 준비가 안 된 상태)에 걸려 접속 실패가 날 수 있다.
+      # -h localhost는 유닉스 소켓으로 붙는데, 초기화용 임시 서버(port: 0, TCP 꺼짐)도 소켓에는 응답한다.
+      # 그래서 3306이 열리기 전에 healthy로 판정돼 app이 Connection refused로 죽었다(CI 36294002919).
+      # 127.0.0.1 + TCP로 확인해야 "app이 실제로 붙을 3306이 열렸다"를 보장한다.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--protocol=tcp", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-studyroom_root}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      MYSQL_USER: ${MYSQL_USER:-studyroom}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-studyroom}
+      JWT_SECRET: ${JWT_SECRET:-studyroom-docker-secret-key-must-be-at-least-32-bytes-long}
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    # 그래도 DB 접속에 실패하면(Hikari fail-fast로 종료) 한 번 더 기동을 시도한다.
+    restart: on-failure:3
+
+volumes:
+  mysql-data:

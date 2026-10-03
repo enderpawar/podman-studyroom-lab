@@ -1,0 +1,23 @@
+# Build output
+build/
+.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Archives / secrets / logs
+*.zip
+.env
+*.log
+
+# Local dev database (스키마 원본은 V1__init.sql이지 DB 파일이 아니다)
+app/data/
+
+# OS
+.DS_Store
+Thumbs.db
