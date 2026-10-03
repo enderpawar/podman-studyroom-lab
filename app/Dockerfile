@@ -20,8 +20,13 @@ RUN ./gradlew bootJar --no-daemon -x test
 
 # ---- 2단계: 실행 ----
 FROM docker.io/library/eclipse-temurin:17-jre
+# Podman 실험 — root가 아닌 실행 전용 사용자. 쿠버네티스 Pod Security Standard의 restricted 정책은
+# root 실행 컨테이너를 거부한다. 이름(spring)이 아니라 숫자 UID로 USER를 지정해야
+# runAsNonRoot 검사가 이미지 메타데이터만 보고 "root 아님"을 판정할 수 있다.
+RUN useradd --system --uid 1001 spring
 WORKDIR /app
-COPY --from=build /workspace/build/libs/*.jar app.jar
+COPY --from=build --chown=1001:1001 /workspace/build/libs/*.jar app.jar
+USER 1001
 
 # Day29에서 만든 프로필 분리 — 컨테이너로 뜰 때는 항상 docker 프로필(application-docker.yml)을 쓴다.
 ENV SPRING_PROFILES_ACTIVE=docker
