@@ -1,4 +1,4 @@
-# Podman으로 옮겨 본 스터디룸 예약 API
+# 스터디룸 예약 API의 Podman 전환 실험
 
 [![CI](https://github.com/enderpawar/podman-studyroom-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/enderpawar/podman-studyroom-lab/actions/workflows/ci.yml)
 
@@ -9,7 +9,7 @@
 - 검증 환경: Windows 11 · WSL 2.7.13 · Podman 5.8.3(클라이언트) / 5.8.8(machine, rootless) · Temurin 17
 - 전체 기록: [docs/verification.md](docs/verification.md) — 명령별 실제 출력, 블로그 초안과 다른 점 22건
 
-## 1. 결과 한눈에 보기
+## 1. 단계별 검증 결과 요약
 
 | 단계 | 한 일 | 결과 | 측정값 |
 |---|---|---|---|
@@ -22,7 +22,7 @@
 | 7 | GitHub Actions `podman` 잡 | 아래 배지 / [3.7절](docs/verification.md#37-7단계--ci-podman-잡) | |
 | 8 | Testcontainers로 실제 MySQL에서 Flyway 검증 | ✅ | 73개 테스트 통과, Day32 `1064` 오류 로컬 재현 |
 
-## 2. 구조: Compose에서 Pod로
+## 2. Compose에서 Pod로의 구조 전환
 
 ```mermaid
 flowchart LR
@@ -43,11 +43,11 @@ flowchart LR
 - `application-docker.yml`을 복사하지 않고 환경변수 `SPRING_DATASOURCE_URL` 하나로 덮어썼다. OS 환경변수가 프로필 yml보다 우선한다.
 - 같은 `deploy/studyroom-pod.yaml` 하나를 로컬(`kube play`), CI(`podman` 잡), 서버(Quadlet)가 함께 쓴다.
 
-## 3. 실행하면서 부딪힌 문제
+## 3. 실행 중 발생한 문제와 해결
 
 설계안을 실제로 돌려 보니 글로만 썼을 때는 보이지 않던 문제가 나왔다. 전부 실제 출력이다.
 
-### 3.1 Windows에서 클론하면 이미지 빌드 실패
+### 3.1 Windows 클론 환경의 이미지 빌드 실패
 
 ```text
 [1/2] STEP 5/5: RUN ./gradlew bootJar --no-daemon -x test
@@ -58,7 +58,7 @@ Error: building at STEP "RUN ./gradlew bootJar --no-daemon -x test": while runni
 - **원인:** `core.autocrlf=true`인 Windows에서 클론하면 `gradlew`가 CRLF가 된다. shebang이 `#!/bin/sh\r`가 되어 리눅스 빌드 컨테이너가 인터프리터를 찾지 못한다. 파일은 분명히 있는데 메시지는 `not found`다. CI(ubuntu)는 LF로 체크아웃되므로 이 문제가 드러나지 않았다.
 - **해결:** `.gitattributes`에 `gradlew text eol=lf` 추가 (`a8c7854`)
 
-### 3.2 Testcontainers 이미지 이름 오류
+### 3.2 Testcontainers 이미지 이름 호환성 오류
 
 ```text
 java.lang.IllegalStateException: Failed to verify that image 'docker.io/library/mysql:8' is a compatible substitute for 'mysql'.
@@ -67,7 +67,7 @@ java.lang.IllegalStateException: Failed to verify that image 'docker.io/library/
 - **원인:** `MySQLContainer`는 생성자에서 이미지 이름을 기본값 `mysql`과 비교한다. 정식 이름 `docker.io/library/mysql`을 같은 이미지로 보지 않는다(1.21.2). Docker가 없어도 생성자에서 바로 실패한다.
 - **해결:** `DockerImageName.parse("docker.io/library/mysql:8").asCompatibleSubstituteFor("mysql")` (`f623e13`)
 
-### 3.3 non-root인데 그룹이 999
+### 3.3 non-root 사용자의 그룹 번호 불일치
 
 ```text
 uid=1001(spring) gid=999(spring) groups=999(spring)
@@ -77,7 +77,7 @@ uid=1001(spring) gid=999(spring) groups=999(spring)
 - **원인:** `useradd --system`이 그룹 번호를 시스템 범위에서 자동으로 배정했다. jar는 `--chown=1001:1001`이라 이름 없는 그룹 1001 소유가 됐다.
 - **해결:** `groupadd --gid 1001` + `useradd --gid 1001`, `USER 1001:1001` (`4019dfc`) → `uid=1001(spring) gid=1001(spring)`
 
-### 3.4 쿠버네티스 YAML에는 depends_on이 없다
+### 3.4 depends_on 부재와 재시작 기반 기동 순서
 
 새 볼륨으로 `kube play`를 하면 app이 mysql 초기화보다 먼저 뜬다.
 
@@ -88,7 +88,7 @@ Caused by: org.flywaydb.core.internal.exception.FlywaySqlException: Unable to ob
 - **설계:** `restartPolicy: Always`에 기대서 다시 뜨게 했다. `initContainers`는 같은 Pod의 mysql보다도 먼저 끝나야 하므로 DB를 기다리는 데 쓸 수 없다.
 - **측정:** 기동 시도 4번(실패 3번, 성공 1번), `RestartCount=3`, 20초 만에 `/health` OK. 설계대로 동작했다.
 
-### 3.5 Windows 도구 환경
+### 3.5 Windows 도구 환경 문제
 
 | 증상 | 원인 | 대응 |
 |---|---|---|
@@ -97,7 +97,7 @@ Caused by: org.flywaydb.core.internal.exception.FlywaySqlException: Unable to ob
 | 저장소에 `NUL` 파일이 생김 | Git Bash에서 `podman machine ssh`를 실행하면 SSH가 known_hosts를 `NUL` 파일로 씀 | `podman machine ssh`는 PowerShell에서 실행 |
 | `0x80073d28 : ... administrator privileges are required` | `winget install Microsoft.WSL`은 관리자 권한이 필요 | 관리자 권한으로 다시 실행 |
 
-## 4. 실행으로 확인한 것
+## 4. 실행 검증 항목과 결과
 
 | 질문 | 확인 방법 | 결과 |
 |---|---|---|
@@ -109,7 +109,7 @@ Caused by: org.flywaydb.core.internal.exception.FlywaySqlException: Unable to ob
 | Quadlet이 rootless 네트워크 대기를 처리하는가 | `quadlet -dryrun -user` | `podman-user-wait-network-online.service`를 자동으로 붙인다 |
 | `systemctl start`가 끝나면 앱도 준비된 것인가 | start 시간과 `/health` 비교 | 아니다. start는 0.9초, 앱 준비는 그 뒤 |
 
-## 5. 커밋으로 따라가는 과정
+## 5. 커밋별 작업 과정
 
 커밋 하나가 단계 하나다. `git log --oneline` 순서대로 `git show <커밋>`으로 읽으면 된다.
 
@@ -143,9 +143,9 @@ deploy/quadlet/studyroom.kube systemd 사용자 서비스 유닛
 docs/verification.md          검증 기록 전체
 ```
 
-## 7. 직접 실행하기
+## 7. 실행 방법
 
-### 설치 (Windows)
+### 7.1 Windows 설치 절차
 
 ```powershell
 winget install -e --id Microsoft.WSL     # 관리자 PowerShell
@@ -156,7 +156,7 @@ podman machine start
 
 `podman compose`를 쓰려면 docker-compose 또는 podman-compose를 따로 설치해야 한다. `scripts/*.sh`는 Git Bash에서 실행한다.
 
-### 단계별 명령
+### 7.2 단계별 실행 명령
 
 ```bash
 podman build -t localhost/study-room-api:dev ./app          # 1
@@ -171,7 +171,7 @@ MSYS_NO_PATHCONV=1 podman exec studyroom-app id              # 5
 podman kube down deploy/studyroom-pod.yaml                   # 볼륨은 남는다
 ```
 
-### Quadlet (podman machine 안 또는 리눅스 서버)
+### 7.3 Quadlet 설치와 실행
 
 ```bash
 cp deploy/quadlet/studyroom.kube deploy/studyroom-pod.yaml ~/.config/containers/systemd/
@@ -182,7 +182,7 @@ systemctl --user stop studyroom
 # 실습이 끝나면 유닛 파일을 지운다. linger가 켜져 있으면 machine을 켤 때마다 자동으로 뜬다.
 ```
 
-### 테스트
+### 7.4 테스트 실행
 
 ```bash
 cd app

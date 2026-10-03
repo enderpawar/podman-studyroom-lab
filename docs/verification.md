@@ -10,7 +10,7 @@
 > 7단계 CI 잡의 GitHub 러너 결과는 3.7절에 적는다.
 > 출력은 실행 로그에서 그대로 발췌했다. 길어서 줄인 곳은 `...`로 표시했다.
 
-## 1. 환경
+## 1. 실행 환경
 
 | 항목 | 값 | 확인 방법 |
 |---|---|---|
@@ -28,7 +28,7 @@
 | MySQL | `mysql:8` 태그 → MySQL 8.4 | Testcontainers 로그 `Database: jdbc:mysql://localhost:35785/test (MySQL 8.4)` |
 | git | `core.autocrlf=true` | `git config --get core.autocrlf` |
 
-### 설치 과정
+### 1.1 설치 과정
 
 | 순서 | 명령 | 결과 |
 |---|---|---|
@@ -59,7 +59,7 @@
 
 ### 3.1 1단계 — 이미지 빌드
 
-#### short name 동작
+#### short name 해석 동작
 
 machine 안의 설정은 아래와 같다.
 
@@ -78,7 +78,7 @@ Trying to pull docker.io/library/eclipse-temurin:17-jre...
 
 **podman machine에서는 short name이 문제가 되지 않았다.** `999-podman-machine.conf`가 검색 레지스트리를 `docker.io` 하나로 덮어쓰기 때문이다. 다른 리눅스 배포판이나 GitHub 러너에서의 동작은 확인하지 않았다.
 
-#### 정규화한 Dockerfile 빌드
+#### 정규화 Dockerfile 빌드 결과
 
 ```bash
 podman build -f Dockerfile.step1 -t localhost/study-room-api:dev ./app   # e2af262 시점의 Dockerfile
@@ -93,7 +93,7 @@ localhost/study-room-api  dev         510857b4e519  1 second ago  380 MB
 
 64초 걸렸다(Gradle 빌드 49초 포함).
 
-#### CRLF `gradlew` (실행해서 확인)
+#### CRLF `gradlew` 빌드 실패 재현
 
 원본 저장소를 이 PC에 클론하면 `.gitattributes`가 없어서 `gradlew`가 CRLF로 체크아웃된다(`file`: `with CRLF line terminators`). 그 폴더를 같은 Dockerfile로 빌드했다.
 
@@ -111,7 +111,7 @@ Error: building at STEP "RUN ./gradlew bootJar --no-daemon -x test": while runni
 
 ### 3.2 2단계 — podman compose
 
-#### provider가 없을 때
+#### compose provider 부재 오류
 
 Podman for Windows 설치본에는 compose provider가 들어 있지 않다.
 
@@ -124,7 +124,7 @@ Error: looking up compose provider failed
 
 docker-compose v5.6.0 단일 exe를 임시 폴더에 받아(sha256 확인) PATH 앞에 두고 다시 실행했다.
 
-#### 실행
+#### compose 실행 결과
 
 ```text
 >>>> Executing external compose provider "...\scratchpad\bin\docker-compose.exe". Please see podman-compose(1) for how to disable this message. <<<<
@@ -260,7 +260,7 @@ app restarts=0 policy=always
 - 컨테이너 이름이 `<pod>-<container>` 규칙(`studyroom-mysql`, `studyroom-app`)임을 확인했다.
 - 이미 초기화된 볼륨이라 mysql이 app(JVM 기동 약 7초)보다 먼저 준비됐고, 재시작은 0회였다.
 
-#### kube down
+#### kube down 후 볼륨 잔존
 
 ```text
 Pods stopped:
@@ -273,7 +273,7 @@ Volumes removed:
 
 `Volumes removed:`가 비어 있고 `podman volume ls`에 `mysql-data`가 남았다. **`kube down`은 기본적으로 볼륨을 지우지 않는다.**
 
-#### kube play — 새 볼륨(app이 먼저 뜨는 경우)
+#### kube play — 새 볼륨에서의 app 선기동과 재시작
 
 `podman volume rm mysql-data` 후 다시 실행했다.
 
@@ -294,7 +294,7 @@ The last packet sent successfully to the server was 0 milliseconds ago. The driv
 
 ### 3.5 5단계 — non-root
 
-#### 첫 시도(`a42f157`)
+#### 첫 시도 결과(`a42f157`)
 
 ```text
 health ok: OK after 9s
@@ -306,7 +306,7 @@ uid=1001(spring) gid=999(spring) groups=999(spring)
 - 실제 원인: `--system`은 그룹 번호를 시스템 범위에서 자동으로 배정해서 999가 됐다. jar 파일은 `--chown=1001:1001`로 이름 없는 그룹 1001 소유가 됐다. 읽기 권한이 있어 기동에는 문제가 없었다.
 - 수정(`4019dfc`): `groupadd --system --gid 1001 spring && useradd --system --uid 1001 --gid 1001 spring`, `USER 1001:1001`
 
-#### 수정 후
+#### 그룹 번호 수정 후 결과
 
 ```text
 build exit=0 elapsed=91s
@@ -318,7 +318,7 @@ image User=1001:1001
 
 이미지 크기는 380 MB로 변화가 없었다.
 
-#### compose 재확인(GitHub Actions docker 잡과 같은 구성)
+#### compose 재확인 결과(GitHub Actions docker 잡과 같은 구성)
 
 `podman compose up -d --build`(79초) → `mysql-1 Healthy` → `app-1 Starting` → `/health` `OK`, `id`는 `uid=1001(spring) gid=1001(spring)`. `compose down -v` 후 남은 컨테이너 0개.
 
@@ -361,7 +361,7 @@ ExecStopPost=/usr/bin/podman kube down /tmp/quadlet-dry/studyroom-pod.yaml
 
 - rootless 유닛에 `podman-user-wait-network-online.service` 의존성이 자동으로 붙는다. 이전에 "미확인"으로 적었던 주석을 고쳤다(`94a1c9a`).
 - 상대 경로 `Yaml=studyroom-pod.yaml`은 유닛 파일 위치 기준의 절대 경로로 풀렸다.
-#### 실제 설치와 실행
+#### Quadlet 실제 설치와 실행 결과
 
 `podman machine cp`로 두 파일을 VM의 `/home/user/.config/containers/systemd/`에 복사했다. VM 사용자는 `user`이고 `Linger=yes`이다. `podman machine ssh`는 PowerShell에서 실행했다.
 
@@ -428,7 +428,7 @@ GitHub 러너 결과: (push 후 기록)
 
 ### 3.8 8단계 — Testcontainers
 
-#### 이미지 이름 오류(Podman 없이 확인)
+#### 이미지 이름 호환성 오류(Podman 없는 환경)
 
 블로그 초안의 `new MySQLContainer<>("docker.io/library/mysql:8")`는 생성자에서 실패한다.
 
@@ -440,7 +440,7 @@ and then use `myImage` instead.
 
 수정: `DockerImageName.parse("docker.io/library/mysql:8").asCompatibleSubstituteFor("mysql")`
 
-#### Podman 연결
+#### Podman 연결 설정과 Ryuk 동작
 
 **환경변수를 하나도 설정하지 않고 실행했다**(`DOCKER_HOST`, `TESTCONTAINERS_RYUK_DISABLED` 모두 없음).
 
@@ -460,7 +460,7 @@ Successfully applied 7 migrations to schema `test`, now at version v7
 - `podman events`에 `docker.io/testcontainers/ryuk:0.12.0 testcontainers-ryuk-...`의 start가 기록됐다. **rootless podman machine에서 Ryuk가 정상 동작했고**, 테스트 후 남은 컨테이너는 0개였다.
 - `dataSourceIsMySqlNotH2` 통과: Test 태스크가 강제한 H2 `SPRING_DATASOURCE_URL`을 `@ServiceConnection`이 덮어썼다는 것이 확인됐다.
 
-#### Day32 재현
+#### Day32 1064 오류 재현
 
 임시 `V999__tmp.sql`(`--공백없는주석` + `select 1;`)을 넣고 전체 테스트를 실행한 뒤 삭제했다.
 
@@ -479,14 +479,14 @@ Caused by: java.sql.SQLSyntaxErrorException: You have an error in your SQL synta
 
 전체 집계: `tests=73 skipped=0 failures=2 errors=0`. **Day32의 1064 오류가 CI까지 가지 않고 로컬 테스트에서 재현됐다.**
 
-#### 최종 상태
+#### 최종 테스트 결과
 
 | 환경 | 결과 |
 |---|---|
 | Podman 없음(설치 전) | 73 = 71 passed + 2 skipped, 45초 |
 | Podman 있음(임시 파일 삭제 후) | 73 passed, 0 skipped, 56초 |
 
-## 4. Windows에서 만난 문제
+## 4. Windows 환경 문제
 
 | 문제 | 원문 / 증상 | 대응 |
 |---|---|---|
@@ -495,14 +495,14 @@ Caused by: java.sql.SQLSyntaxErrorException: You have an error in your SQL synta
 | `wsl --install --no-distribution` | WSL이 없으면 기본 `wsl.exe`가 안내 문구만 출력 | `winget install Microsoft.WSL`을 관리자 권한으로 실행 |
 | 설치 직후 PATH | 현재 셸에서 `podman`을 못 찾음 | 새 터미널을 열거나 PATH를 다시 읽음 |
 
-## 5. 작업 중 낸 실수
+## 5. 작업 중 실수 기록
 
 - Day32 재현 첫 시도(Podman 설치 전): 셸 현재 디렉터리가 `build/test-results/test` 안이어서 `rm -rf build/test-results`가 `Device or resource busy`로 실패했다. `&&`로 이어 놓아 Gradle이 실행되지 않았고, 다시 실행했다.
 - 기준선 로그를 처음에 저장소 밖(`Desktop\baseline-test.log`)에 썼다가 임시 폴더로 옮겼다.
 - Git Bash에서 `podman machine ssh`를 실행해 `NUL` 파일을 만들었다(위 4절).
 - Podman 설치 전 문서에 Windows용 `DOCKER_HOST=npipe:////./pipe/podman-machine-default`와 `RYUK_DISABLED`를 "미검증 예시"로 적었다. 실제로는 둘 다 필요 없었다.
 
-## 6. 블로그 초안과 달랐던 점
+## 6. 블로그 초안과의 차이
 
 | 초안 위치 | 초안 내용 | 실제 결과 | 수정 제안 |
 |---|---|---|---|
